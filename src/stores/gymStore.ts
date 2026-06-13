@@ -47,8 +47,10 @@ interface GymStore {
   unfreezePackage: (id: string) => void
 
   createBooking: (memberId: string, coachId: string, courseId: string, datetime: string, storeId: string) => { success: boolean; booking?: Booking; error?: string; simulation?: ReturnType<typeof simulateDeduction> }
-  cancelBooking: (bookingId: string, reason: string, afterStart: boolean) => void
+  cancelBooking: (bookingId: string, reason: string, afterStart: boolean) => { success: boolean; error?: string; requiresAdjustment?: boolean; lockedPeriod?: string }
   confirmWaitlist: (bookingId: string) => void
+  isPeriodClosed: (period: string) => boolean
+  isBookingLocked: (bookingId: string) => { locked: boolean; period?: string }
 
   approveLeave: (leaveId: string) => void
   rejectLeave: (leaveId: string) => void
@@ -395,7 +397,17 @@ export const useGymStore = create<GymStore>((set, get) => ({
   cancelBooking: (bookingId, reason, afterStart) => {
     const state = get()
     const booking = state.bookings.find(b => b.id === bookingId)
-    if (!booking) return
+    if (!booking) return { success: false, error: '预约不存在' }
+
+    const bookingPeriod = booking.datetime.slice(0, 7)
+    if (state.isPeriodClosed(bookingPeriod)) {
+      return {
+        success: false,
+        error: `该预约所属期间(${bookingPeriod})已关账，不能直接取消`,
+        requiresAdjustment: true,
+        lockedPeriod: bookingPeriod,
+      }
+    }
 
     const originalTx = state.transactions.find(t => t.bookingId === bookingId && t.type === 'POSITIVE')
     const newTxs = [...state.transactions]
@@ -414,6 +426,7 @@ export const useGymStore = create<GymStore>((set, get) => ({
     save('bookings', newBookings)
     save('transactions', newTxs)
     get().addAuditLog('CANCEL_BOOKING', 'Booking', bookingId, JSON.stringify(booking), JSON.stringify({ status: 'cancelled', reason }))
+    return { success: true }
   },
 
   confirmWaitlist: (bookingId) => {
@@ -422,6 +435,18 @@ export const useGymStore = create<GymStore>((set, get) => ({
     )
     set({ bookings: newBookings })
     save('bookings', newBookings)
+  },
+
+  isPeriodClosed: (period) => {
+    return get().closingSnapshots.some(s => s.period === period && s.isLocked)
+  },
+
+  isBookingLocked: (bookingId) => {
+    const booking = get().bookings.find(b => b.id === bookingId)
+    if (!booking) return { locked: false }
+    const period = booking.datetime.slice(0, 7)
+    if (get().isPeriodClosed(period)) return { locked: true, period }
+    return { locked: false }
   },
 
   approveLeave: (leaveId) => {

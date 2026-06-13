@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Search, BookOpen, X, AlertCircle } from 'lucide-react'
+import { Search, BookOpen, X, AlertCircle, Lock, FileEdit } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useGymStore } from '@/stores/gymStore'
 import type { SimulationResult, Booking } from '@/types'
@@ -22,7 +22,7 @@ export default function BookingPage() {
   const {
     currentUser, coaches, courses, courseLevels, venues, stores,
     bookings, members, schedules, createBooking, cancelBooking,
-    simulateDeductionForBooking,
+    simulateDeductionForBooking, isBookingLocked,
   } = useGymStore()
 
   const [filterCoach, setFilterCoach] = useState('')
@@ -36,6 +36,7 @@ export default function BookingPage() {
   const [cancelBookingId, setCancelBookingId] = useState<string | null>(null)
   const [cancelReason, setCancelReason] = useState('')
   const [cancelAfterStart, setCancelAfterStart] = useState(false)
+  const [lockedAlert, setLockedAlert] = useState<{ show: boolean; period: string; error: string }>({ show: false, period: '', error: '' })
 
   const filteredCourses = useMemo(() => {
     return courses.filter(c => {
@@ -87,7 +88,14 @@ export default function BookingPage() {
 
   const handleCancel = () => {
     if (!cancelBookingId || !cancelReason) return
-    cancelBooking(cancelBookingId, cancelReason, cancelAfterStart)
+    const result = cancelBooking(cancelBookingId, cancelReason, cancelAfterStart)
+    if (result.requiresAdjustment) {
+      setLockedAlert({ show: true, period: result.lockedPeriod ?? '', error: result.error ?? '' })
+      setCancelBookingId(null)
+      setCancelReason('')
+      setCancelAfterStart(false)
+      return
+    }
     setCancelBookingId(null)
     setCancelReason('')
     setCancelAfterStart(false)
@@ -223,12 +231,25 @@ export default function BookingPage() {
                     </span>
                   </td>
                   <td className="px-5 py-3">
-                    <button
-                      onClick={() => setCancelBookingId(b.id)}
-                      className="text-xs text-coral hover:text-coral-light transition-colors"
-                    >
-                      取消
-                    </button>
+                    {(() => {
+                      const lockInfo = isBookingLocked(b.id)
+                      if (lockInfo.locked) {
+                        return (
+                          <div className="flex items-center gap-1 text-xs text-white/30" title={`期间 ${lockInfo.period} 已关账，请通过财务调整单处理`}>
+                            <Lock className="w-3 h-3" />
+                            <span>期间锁定</span>
+                          </div>
+                        )
+                      }
+                      return (
+                        <button
+                          onClick={() => setCancelBookingId(b.id)}
+                          className="text-xs text-coral hover:text-coral-light transition-colors"
+                        >
+                          取消
+                        </button>
+                      )
+                    })()}
                   </td>
                 </tr>
               )
@@ -355,6 +376,44 @@ export default function BookingPage() {
                   确认取消
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lockedAlert.show && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setLockedAlert({ ...lockedAlert, show: false })}>
+          <div className="card-dark p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-full bg-gold/15 flex items-center justify-center shrink-0">
+                <Lock className="w-6 h-6 text-gold" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-white">期间已关账</h2>
+                <div className="text-xs text-white/40">所属期间 {lockedAlert.period}</div>
+              </div>
+            </div>
+            <div className="bg-coral/10 border border-coral/20 rounded-lg p-3 mb-4">
+              <div className="flex items-start gap-2 text-coral text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>{lockedAlert.error}</div>
+              </div>
+            </div>
+            <div className="bg-dark-light rounded-lg p-3 mb-4">
+              <div className="flex items-start gap-2 text-xs text-white/60">
+                <FileEdit className="w-4 h-4 shrink-0 mt-0.5 text-gold" />
+                <div>
+                  请联系财务人员在<span className="text-gold mx-1">月度关账 → 调整单</span>中创建调整单处理历史预约的冲销或修改，调整单审批后会自动生成 ADJUSTMENT 类型流水参与余额重放。
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setLockedAlert({ ...lockedAlert, show: false })}
+                className="px-4 py-2 rounded-lg bg-gold text-emerald-950 font-medium text-sm hover:bg-gold-light transition-colors"
+              >
+                我知道了
+              </button>
             </div>
           </div>
         </div>
