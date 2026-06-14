@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Calendar, Ban, UserX, RefreshCw, Info, Gift, Briefcase, Heart, ShoppingBag } from 'lucide-react'
+import { Calendar, Ban, UserX, RefreshCw, Info, Gift, Briefcase, Heart, ShoppingBag, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useGymStore } from '@/stores/gymStore'
 import { isCoachOnLeave, getBookingDeductionExplanation, getBookingRestrictionReasons } from '@/engines/scheduleEngine'
@@ -25,20 +25,22 @@ const PACKAGE_TYPE_ICONS: Record<string, any> = {
   '补偿课时': Heart,
   '企业团课': Briefcase,
   '购买课包': ShoppingBag,
+  '家庭共享': Users,
 }
 
-function BookingDetailCard({ booking, packages, transactions, courses, closingSnapshots, coaches }: {
+function BookingDetailCard({ booking, packages, transactions, courses, closingSnapshots, coaches, members }: {
   booking: Booking
   packages: Package[]
   transactions: Transaction[]
   courses: { id: string; levelId: string; storeId: string; name: string }[]
   closingSnapshots: any[]
   coaches: { id: string; name: string }[]
+  members: { id: string; name: string }[]
 }) {
   const [expanded, setExpanded] = useState(false)
 
   const bookingTxs = getBookingTransactions(booking.id, transactions)
-  const deductionExplanations = getBookingDeductionExplanation(booking, packages, bookingTxs)
+  const deductionExplanations = getBookingDeductionExplanation(booking, packages, bookingTxs, members)
   const restrictionReasons = getBookingRestrictionReasons(booking, closingSnapshots, packages, courses)
 
   const originalCoach = booking.originalCoachId ? coaches.find(c => c.id === booking.originalCoachId) : null
@@ -125,6 +127,9 @@ function BookingDetailCard({ booking, packages, transactions, courses, closingSn
                         <IconComp className="w-3 h-3 text-gold" />
                         <span className="text-white/70">{exp.packageName}</span>
                         <span className="text-white/30">({exp.packageType})</span>
+                        {exp.sharedFrom && (
+                          <span className="text-gold/70 text-[10px]">来自 {exp.sharedFrom}</span>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <span className={exp.deductionAmount < 0 ? 'text-coral' : 'text-emerald-400'}>
@@ -301,6 +306,7 @@ export default function Timetable() {
               courses={courses}
               closingSnapshots={closingSnapshots}
               coaches={coaches}
+              members={members}
             />
           ))}
       </div>

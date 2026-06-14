@@ -366,10 +366,10 @@ export const useGymStore = create<GymStore>((set, get) => ({
       return { success: false, error: '教练该时段休假中' }
     }
 
-    const sim = simulateDeduction(memberId, course.levelId, storeId, state.packages, state.transactions, state.packageTypes)
+    const sim = simulateDeduction(memberId, course.levelId, storeId, state.packages, state.transactions, state.familyGroups, state.packageTypes)
     if (!sim.canDeduct) return { success: false, error: sim.reason ?? '余额不足', simulation: sim }
 
-    const match = matchPackagesForDeduction(memberId, course.levelId, storeId, state.packages, state.transactions)
+    const match = matchPackagesForDeduction(memberId, course.levelId, storeId, state.packages, state.transactions, state.familyGroups)
     if (!match.canDeduct || match.matched.length === 0) return { success: false, error: match.reason ?? '无可用课包', simulation: sim }
 
     const pkg = match.matched[0]
@@ -387,10 +387,11 @@ export const useGymStore = create<GymStore>((set, get) => ({
     }
 
     const tx = createPositiveTransaction(pkg.id, booking.id, 1, `预约:${course.name}`, state.currentUser?.id)
-    const isShared = !!(pkg.isShared && pkg.sharedFromMemberId)
+    const isSharedUse = match.details.find(d => d.package.id === pkg.id)?.isSharedUse
+    const sharedFrom = isSharedUse ? pkg.memberId : (pkg.sharedFromMemberId ?? undefined)
 
     const newBookings = [...state.bookings, booking]
-    const newTxs = [...state.transactions, { ...tx, isSharedDeduction: isShared as boolean, sharedFromMemberId: pkg.sharedFromMemberId }]
+    const newTxs = [...state.transactions, { ...tx, isSharedDeduction: !!isSharedUse, sharedFromMemberId: sharedFrom }]
 
     set({ bookings: newBookings, transactions: newTxs })
     save('bookings', newBookings)
@@ -616,7 +617,7 @@ export const useGymStore = create<GymStore>((set, get) => ({
     const state = get()
     const course = state.courses.find(c => c.id === courseId)
     if (!course) return { matchedPackages: [], totalDeduction: 0, canDeduct: false, reason: '课程不存在', beforeSnapshot: {}, afterSnapshot: {} }
-    return simulateDeduction(memberId, course.levelId, storeId, state.packages, state.transactions, state.packageTypes)
+    return simulateDeduction(memberId, course.levelId, storeId, state.packages, state.transactions, state.familyGroups, state.packageTypes)
   },
 
   substituteCoach: (bookingId, substituteCoachId, reason) => {

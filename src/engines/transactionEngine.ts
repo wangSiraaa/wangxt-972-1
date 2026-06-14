@@ -1,4 +1,4 @@
-import type { Package, Transaction, SimulationResult, TransactionSource, Booking } from '@/types'
+import type { Package, Transaction, SimulationResult, TransactionSource, Booking, FamilyGroup } from '@/types'
 import { getAvailableBalance, isPackageFrozen, isPackageExpired, getPackageType, getPackagePriority, generateDeductionDetails, matchPackagesForDeduction } from './balanceEngine'
 import { generateId } from '@/lib/storage'
 
@@ -184,11 +184,12 @@ export function simulateDeduction(
   storeId: string,
   packages: Package[],
   transactions: Transaction[],
+  familyGroups: FamilyGroup[],
   packageTypes: { id: string; name: string }[],
   requiredSessions: number = 1
 ): SimulationResult {
   const { matched, canDeduct, reason } = matchPackagesForDeduction(
-    memberId, courseLevelId, storeId, packages, transactions, requiredSessions
+    memberId, courseLevelId, storeId, packages, transactions, familyGroups, requiredSessions
   )
 
   let remaining = requiredSessions

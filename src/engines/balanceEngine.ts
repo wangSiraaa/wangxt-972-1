@@ -1,4 +1,13 @@
-import type { Package, Transaction, PackageType, DeductionDetail, PackageAccountSummary, BookingExplanation } from '@/types'
+import type { Package, Transaction, PackageType, DeductionDetail, PackageAccountSummary, BookingExplanation, FamilyGroup } from '@/types'
+
+type ScoredPackage = {
+  package: Package
+  score: number
+  reasons: string[]
+  available: boolean
+  isSharedUse?: boolean
+  sharedRemaining?: number
+}
 
 export function calculateBalance(packageId: string, transactions: Transaction[]): number {
   return transactions
@@ -13,6 +22,12 @@ export function calculateBalance(packageId: string, transactions: Transaction[])
       }
       return sum
     }, 0)
+}
+
+export function getSharedQuotaUsed(memberId: string, sharedPackageId: string, transactions: Transaction[]): number {
+  return transactions
+    .filter(t => t.packageId === sharedPackageId && t.sharedFromMemberId && t.amount < 0 && t.bookingId)
+    .reduce((sum, t) => sum + Math.abs(t.amount), 0)
 }
 
 export function isPackageFrozen(pkg: Package, now: Date = new Date()): boolean {
@@ -128,40 +143,96 @@ export function matchPackagesForDeduction(
   storeId: string,
   packages: Package[],
   transactions: Transaction[],
+  familyGroups: FamilyGroup[],
   requiredSessions: number = 1,
   now: Date = new Date()
 ): {
   matched: Package[]
   canDeduct: boolean
   reason?: string
-  details: { package: Package; score: number; reasons: string[] }[]
+  details: { package: Package; score: number; reasons: string[]; isSharedUse?: boolean; sharedRemaining?: number }[]
 } {
   const memberPackages = packages.filter(p => p.memberId === memberId)
+  
+  const memberFamilyGroups = familyGroups.filter(fg => fg.memberIds.includes(memberId))
+  const sharedPackages: { pkg: Package; group: FamilyGroup; remainingQuota: number }[] = []
+  
+  for (const fg of memberFamilyGroups) {
+    if (!fg.sharedPackageId) continue
+    const sharedPkg = packages.find(p => p.id === fg.sharedPackageId)
+    if (!sharedPkg || sharedPkg.memberId === memberId) continue
+    
+    const quotaUsed = getSharedQuotaUsed(memberId, fg.sharedPackageId, transactions)
+    const remainingQuota = Math.max(0, fg.sharedQuota - quotaUsed)
+    
+    if (remainingQuota > 0) {
+      sharedPackages.push({ pkg: sharedPkg, group: fg, remainingQuota })
+    }
+  }
 
-  const scored = memberPackages
+  const scored: ScoredPackage[] = memberPackages
     .map(pkg => {
       const result = scorePackageForDeduction(pkg, courseLevelId, storeId, transactions, now)
       return { package: pkg, score: result.score, reasons: result.reasons, available: result.available }
     })
-    .sort((a, b) => b.score - a.score)
+
+  const sharedScored = sharedPackages
+    .map(({ pkg, group, remainingQuota }) => {
+      const result = scorePackageForDeduction(pkg, courseLevelId, storeId, transactions, now)
+      const pkgBalance = getAvailableBalance(pkg, transactions)
+      const effectiveAvailable = Math.min(remainingQuota, pkgBalance)
+      
+      let reasons = [...result.reasons]
+      let available = result.available && effectiveAvailable > 0
+      
+      if (available) {
+        reasons = [`家庭共享(剩余${remainingQuota}节)`, ...result.reasons.filter(r => r !== '共享课包')]
+      } else if (!result.available) {
+        reasons = result.reasons
+      } else if (effectiveAvailable <= 0) {
+        reasons = ['共享额度已用完']
+        available = false
+      }
+      
+      return { 
+        package: pkg, 
+        score: result.score, 
+        reasons, 
+        available,
+        isSharedUse: true,
+        sharedRemaining: effectiveAvailable
+      }
+    })
+
+  const allScored = [...scored, ...sharedScored].sort((a, b) => b.score - a.score)
 
   let remaining = requiredSessions
   const matched: Package[] = []
 
-  for (const s of scored) {
+  for (const s of allScored) {
     if (remaining <= 0) break
     if (!s.available) continue
-    const balance = getAvailableBalance(s.package, transactions)
-    if (balance > 0) {
+    
+    const availableBalance = 'sharedRemaining' in s && s.sharedRemaining !== undefined
+      ? s.sharedRemaining
+      : getAvailableBalance(s.package, transactions)
+    
+    if (availableBalance > 0) {
       matched.push(s.package)
-      remaining -= Math.min(balance, remaining)
+      remaining -= Math.min(availableBalance, remaining)
     }
   }
 
-  const details = scored.map(s => ({ package: s.package, score: s.score, reasons: s.reasons }))
+  const details = allScored.map(s => ({ 
+    package: s.package, 
+    score: s.score, 
+    reasons: s.reasons,
+    isSharedUse: 'isSharedUse' in s ? s.isSharedUse : undefined,
+    sharedRemaining: 'sharedRemaining' in s ? s.sharedRemaining : undefined
+  }))
 
   if (remaining > 0) {
-    const unavailableReasons = [...new Set(scored.filter(s => !s.available).flatMap(s => s.reasons))]
+    const unavailableReasons = [...new Set(allScored.filter(s => !s.available).flatMap(s => s.reasons))]
     const reason = unavailableReasons.length > 0
       ? `可用课包余额不足 (${unavailableReasons.join('、')})`
       : '可用课包余额不足'
@@ -253,6 +324,7 @@ export function explainBooking(
   transactions: Transaction[],
   packageTypes: PackageType[],
   closingPeriods: string[],
+  familyGroups: FamilyGroup[],
   bookingDate?: string
 ): BookingExplanation {
   const now = bookingDate ? new Date(bookingDate) : new Date()
@@ -266,7 +338,7 @@ export function explainBooking(
   }
 
   const { matched, canDeduct, reason, details } = matchPackagesForDeduction(
-    memberId, courseLevelId, storeId, packages, transactions, 1, now
+    memberId, courseLevelId, storeId, packages, transactions, familyGroups, 1, now
   )
 
   const deductionPlan = canDeduct

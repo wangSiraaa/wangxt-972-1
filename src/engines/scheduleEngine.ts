@@ -210,23 +210,34 @@ export function createBatchRescheduleRecord(
 
 export function getBookingDeductionExplanation(
   booking: Booking,
-  packages: { id: string; name?: string; isGift: boolean; isCompensation: boolean; isCorporate: boolean }[],
-  transactions: { bookingId?: string; packageId: string; amount: number; type: string; source?: string; relatedBookingId?: string }[]
-): { packageName: string; packageType: string; deductionAmount: number; reason: string }[] {
+  packages: { id: string; name?: string; isGift: boolean; isCompensation: boolean; isCorporate: boolean; memberId: string }[],
+  transactions: { bookingId?: string; packageId: string; amount: number; type: string; source?: string; relatedBookingId?: string; isSharedDeduction?: boolean; sharedFromMemberId?: string }[],
+  members?: { id: string; name: string }[]
+): { packageName: string; packageType: string; deductionAmount: number; reason: string; sharedFrom?: string }[] {
   const bookingTxs = transactions.filter(
     t => (t.bookingId === booking.id || t.relatedBookingId === booking.id) && t.type !== 'CLOSING'
   )
 
-  const explanations: { packageName: string; packageType: string; deductionAmount: number; reason: string }[] = []
+  const explanations: { packageName: string; packageType: string; deductionAmount: number; reason: string; sharedFrom?: string }[] = []
 
   for (const tx of bookingTxs) {
     const pkg = packages.find(p => p.id === tx.packageId)
     if (!pkg) continue
 
     let packageType = '购买课包'
-    if (pkg.isGift) packageType = '赠课'
-    else if (pkg.isCompensation) packageType = '补偿课时'
-    else if (pkg.isCorporate) packageType = '企业团课'
+    let sharedFrom: string | undefined
+
+    if (tx.isSharedDeduction && tx.sharedFromMemberId) {
+      packageType = '家庭共享'
+      const fromMember = members?.find(m => m.id === tx.sharedFromMemberId)
+      sharedFrom = fromMember ? fromMember.name : tx.sharedFromMemberId
+    } else if (pkg.isGift) {
+      packageType = '赠课'
+    } else if (pkg.isCompensation) {
+      packageType = '补偿课时'
+    } else if (pkg.isCorporate) {
+      packageType = '企业团课'
+    }
 
     let reason = ''
     if (tx.type === 'POSITIVE') {
@@ -244,6 +255,7 @@ export function getBookingDeductionExplanation(
       packageType,
       deductionAmount: tx.amount,
       reason,
+      sharedFrom,
     })
   }
 
