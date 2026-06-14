@@ -61,7 +61,9 @@ export default function BookingPage() {
 
   const handleBook = (courseId: string) => {
     if (!currentUser) return
-    const sim = simulateDeductionForBooking(currentUser.id, courseId)
+    const course = courses.find(c => c.id === courseId)
+    if (!course) return
+    const sim = simulateDeductionForBooking(currentUser.id, courseId, course.storeId)
     setSimulation(sim)
     setBookingCourse(courseId)
     setBookingError('')

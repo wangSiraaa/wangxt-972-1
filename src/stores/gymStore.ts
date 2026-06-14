@@ -6,11 +6,11 @@ import type {
   RefundRequest, AdjustmentOrder, AuditLog, UserRole
 } from '@/types'
 import { load, save, generateId, clearAll } from '@/lib/storage'
-import { createPositiveTransaction, createReversalTransaction, createCompensationTransaction, createAdjustmentTransaction, matchPackagesForDeduction, simulateDeduction } from '@/engines/transactionEngine'
+import { createPositiveTransaction, createReversalTransaction, createCompensationTransaction, createAdjustmentTransaction, createSubstitutionTransactions, createComplaintTransactions, createBatchRescheduleTransactions, matchPackagesForDeduction, simulateDeduction } from '@/engines/transactionEngine'
 import { getAvailableBalance, calculateBalance } from '@/engines/balanceEngine'
 import { checkMemberTimeConflict, checkCoachCapacityConflict, checkVenueCapacityConflict } from '@/engines/conflictEngine'
-import { isCoachOnLeave, getBookingsAffectedByLeave } from '@/engines/scheduleEngine'
-import { createClosingSnapshot, reconcileClosingSnapshot } from '@/engines/closingEngine'
+import { isCoachOnLeave, getBookingsAffectedByLeave, canSubstituteCoach, createSubstitution, canFileComplaint, createComplaintRecord, canBatchReschedule, createBatchRescheduleRecord } from '@/engines/scheduleEngine'
+import { createClosingSnapshot, reconcileClosingSnapshot, generateClosingDiffReport } from '@/engines/closingEngine'
 
 interface GymStore {
   currentUser: Member | null
@@ -67,7 +67,13 @@ interface GymStore {
   createAdjustment: (closingSnapshotId: string, reason: string, adjustments: { packageId: string; amount: number }[]) => void
   getReconciliationDiffs: (snapshotId: string) => ReturnType<typeof reconcileClosingSnapshot>
 
-  simulateDeductionForBooking: (memberId: string, courseId: string) => ReturnType<typeof simulateDeduction>
+  simulateDeductionForBooking: (memberId: string, courseId: string, storeId: string) => ReturnType<typeof simulateDeduction>
+
+  substituteCoach: (bookingId: string, substituteCoachId: string, reason: string) => { success: boolean; error?: string }
+  fileComplaint: (bookingId: string, reason: string, refundSessions: number, description?: string) => { success: boolean; error?: string }
+  processComplaint: (complaintId: string, approved: boolean, operatorId?: string) => void
+  batchReschedule: (coachId: string, fromDate: string, toDate: string, reason: string) => { success: boolean; affectedCount?: number; error?: string }
+  getClosingDiffReport: (snapshotId: string) => ReturnType<typeof import('@/engines/closingEngine').generateClosingDiffReport> | null
 
   addAuditLog: (action: string, targetType: string, targetId: string, beforeData?: string, afterData?: string) => void
   getPackageBalance: (packageId: string) => number
@@ -136,12 +142,12 @@ const DEMO_MEMBERS: Member[] = [
 ]
 
 const DEMO_PACKAGES: Package[] = [
-  { id: 'pkg1', memberId: 'm1', packageTypeId: 'pt1', totalSessions: 10, expireDate: futureDate(30), isShared: true, sharedQuota: 3, isGift: false, transferRule: 'allowed', refundRule: 'proportional', courseLevelIds: ['lv1', 'lv2'], createdAt: '2025-06-01', status: 'active' },
-  { id: 'pkg2', memberId: 'm1', packageTypeId: 'pt4', totalSessions: 5, expireDate: futureDate(15), isShared: false, sharedQuota: 0, isGift: true, transferRule: 'none', refundRule: 'none', courseLevelIds: ['lv1', 'lv2'], createdAt: '2025-06-05', status: 'active' },
-  { id: 'pkg3', memberId: 'm2', packageTypeId: 'pt2', totalSessions: 20, expireDate: futureDate(60), isShared: false, sharedQuota: 0, isGift: false, transferRule: 'approval', refundRule: 'proportional', courseLevelIds: ['lv2', 'lv3'], createdAt: '2025-05-20', status: 'active' },
-  { id: 'pkg4', memberId: 'm3', packageTypeId: 'pt3', totalSessions: 50, expireDate: futureDate(180), isShared: false, sharedQuota: 0, isGift: false, transferRule: 'allowed', refundRule: 'full', courseLevelIds: ['lv1', 'lv2', 'lv3'], createdAt: '2025-04-01', status: 'active' },
-  { id: 'pkg5', memberId: 'm4', packageTypeId: 'pt1', totalSessions: 10, expireDate: futureDate(-5), isShared: false, sharedQuota: 0, isGift: false, transferRule: 'allowed', refundRule: 'proportional', courseLevelIds: ['lv1', 'lv2'], createdAt: '2025-03-01', status: 'expired' },
-  { id: 'pkg6', memberId: 'm4', packageTypeId: 'pt2', totalSessions: 20, expireDate: futureDate(90), isShared: false, sharedQuota: 0, isGift: false, transferRule: 'allowed', refundRule: 'proportional', courseLevelIds: ['lv2', 'lv3'], createdAt: '2025-06-10', status: 'active', freezeStart: futureDate(-3), freezeEnd: futureDate(7) },
+  { id: 'pkg1', memberId: 'm1', packageTypeId: 'pt1', totalSessions: 10, expireDate: futureDate(30), isShared: true, sharedQuota: 3, isGift: false, isCompensation: false, isCorporate: false, storeIds: ['store1', 'store2'], transferRule: 'allowed', refundRule: 'proportional', courseLevelIds: ['lv1', 'lv2'], createdAt: '2025-06-01', status: 'active' },
+  { id: 'pkg2', memberId: 'm1', packageTypeId: 'pt4', totalSessions: 5, expireDate: futureDate(15), isShared: false, sharedQuota: 0, isGift: true, isCompensation: false, isCorporate: false, storeIds: ['store1'], transferRule: 'none', refundRule: 'none', courseLevelIds: ['lv1', 'lv2'], createdAt: '2025-06-05', status: 'active' },
+  { id: 'pkg3', memberId: 'm2', packageTypeId: 'pt2', totalSessions: 20, expireDate: futureDate(60), isShared: false, sharedQuota: 0, isGift: false, isCompensation: false, isCorporate: true, storeIds: ['store1', 'store2'], transferRule: 'approval', refundRule: 'proportional', courseLevelIds: ['lv2', 'lv3'], createdAt: '2025-05-20', status: 'active' },
+  { id: 'pkg4', memberId: 'm3', packageTypeId: 'pt3', totalSessions: 50, expireDate: futureDate(180), isShared: false, sharedQuota: 0, isGift: false, isCompensation: false, isCorporate: false, storeIds: ['store1', 'store2'], transferRule: 'allowed', refundRule: 'full', courseLevelIds: ['lv1', 'lv2', 'lv3'], createdAt: '2025-04-01', status: 'active' },
+  { id: 'pkg5', memberId: 'm4', packageTypeId: 'pt1', totalSessions: 10, expireDate: futureDate(-5), isShared: false, sharedQuota: 0, isGift: false, isCompensation: false, isCorporate: false, storeIds: ['store2'], transferRule: 'allowed', refundRule: 'proportional', courseLevelIds: ['lv1', 'lv2'], createdAt: '2025-03-01', status: 'expired' },
+  { id: 'pkg6', memberId: 'm4', packageTypeId: 'pt2', totalSessions: 20, expireDate: futureDate(90), isShared: false, sharedQuota: 0, isGift: false, isCompensation: true, isCorporate: false, storeIds: ['store2'], transferRule: 'allowed', refundRule: 'proportional', courseLevelIds: ['lv2', 'lv3'], createdAt: '2025-06-10', status: 'active', freezeStart: futureDate(-3), freezeEnd: futureDate(7) },
 ]
 
 const DEMO_TRANSACTIONS: Transaction[] = [
@@ -360,10 +366,10 @@ export const useGymStore = create<GymStore>((set, get) => ({
       return { success: false, error: '教练该时段休假中' }
     }
 
-    const sim = simulateDeduction(memberId, course.levelId, state.packages, state.transactions, state.packageTypes)
+    const sim = simulateDeduction(memberId, course.levelId, storeId, state.packages, state.transactions, state.packageTypes)
     if (!sim.canDeduct) return { success: false, error: sim.reason ?? '余额不足', simulation: sim }
 
-    const match = matchPackagesForDeduction(memberId, course.levelId, state.packages, state.transactions)
+    const match = matchPackagesForDeduction(memberId, course.levelId, storeId, state.packages, state.transactions)
     if (!match.canDeduct || match.matched.length === 0) return { success: false, error: match.reason ?? '无可用课包', simulation: sim }
 
     const pkg = match.matched[0]
@@ -565,7 +571,7 @@ export const useGymStore = create<GymStore>((set, get) => ({
 
   executeClosing: (period) => {
     const state = get()
-    const snapshot = createClosingSnapshot(period, state.packages, state.transactions)
+    const snapshot = createClosingSnapshot(period, state.packages, state.transactions, state.bookings, state.coaches, state.courses)
     const closingTxs = Object.entries(snapshot.snapshotData).map(([packageId, balance]) => ({
       id: generateId(),
       packageId,
@@ -606,11 +612,139 @@ export const useGymStore = create<GymStore>((set, get) => ({
     return reconcileClosingSnapshot(snapshot, state.packages, state.transactions, state.members)
   },
 
-  simulateDeductionForBooking: (memberId, courseId) => {
+  simulateDeductionForBooking: (memberId, courseId, storeId) => {
     const state = get()
     const course = state.courses.find(c => c.id === courseId)
     if (!course) return { matchedPackages: [], totalDeduction: 0, canDeduct: false, reason: '课程不存在', beforeSnapshot: {}, afterSnapshot: {} }
-    return simulateDeduction(memberId, course.levelId, state.packages, state.transactions, state.packageTypes)
+    return simulateDeduction(memberId, course.levelId, storeId, state.packages, state.transactions, state.packageTypes)
+  },
+
+  substituteCoach: (bookingId, substituteCoachId, reason) => {
+    const state = get()
+    const booking = state.bookings.find(b => b.id === bookingId)
+    if (!booking) return { success: false, error: '预约不存在' }
+
+    const bookingPeriod = booking.datetime.slice(0, 7)
+    if (state.isPeriodClosed(bookingPeriod)) {
+      return { success: false, error: `该预约所属期间(${bookingPeriod})已关账，请通过调整单处理` }
+    }
+
+    const { canSubstitute, reason: subReason } = canSubstituteCoach(
+      booking.coachId, substituteCoachId, booking.datetime, state.bookings, state.schedules
+    )
+    if (!canSubstitute) return { success: false, error: subReason }
+
+    const originalTx = state.transactions.find(t => t.bookingId === bookingId && t.type === 'POSITIVE' && t.source !== 'substitution')
+    const newTxs = [...state.transactions]
+    if (originalTx) {
+      const subTxs = createSubstitutionTransactions(booking, originalTx.packageId, originalTx.packageId, reason, state.currentUser?.id)
+      newTxs.push(...subTxs)
+    }
+
+    const { booking: updatedBooking } = createSubstitution(booking, substituteCoachId, reason, state.currentUser?.id)
+    const newBookings = state.bookings.map(b => b.id === bookingId ? updatedBooking : b)
+
+    set({ bookings: newBookings, transactions: newTxs })
+    save('bookings', newBookings)
+    save('transactions', newTxs)
+    get().addAuditLog('SUBSTITUTE', 'Booking', bookingId, JSON.stringify(booking), JSON.stringify(updatedBooking))
+    return { success: true }
+  },
+
+  fileComplaint: (bookingId, reason, refundSessions, description) => {
+    const state = get()
+    const booking = state.bookings.find(b => b.id === bookingId)
+    if (!booking) return { success: false, error: '预约不存在' }
+
+    const { canFile, reason: fileReason } = canFileComplaint(booking, state.closingSnapshots)
+    if (!canFile) return { success: false, error: fileReason }
+
+    const complaint = createComplaintRecord(bookingId, booking.memberId, reason, refundSessions, description)
+    const complaints = [...(state as any).complaints ?? [], complaint]
+    set({ complaints } as any)
+    save('complaints', complaints)
+    get().addAuditLog('COMPLAINT', 'Booking', bookingId)
+    return { success: true }
+  },
+
+  processComplaint: (complaintId, approved, operatorId) => {
+    const state = get()
+    const complaints: any[] = (state as any).complaints ?? []
+    const complaint = complaints.find((c: any) => c.id === complaintId)
+    if (!complaint) return
+
+    const booking = state.bookings.find(b => b.id === complaint.bookingId)
+    if (!booking) return
+
+    if (approved) {
+      const originalTx = state.transactions.find(t => t.bookingId === complaint.bookingId && t.type === 'POSITIVE')
+      if (originalTx) {
+        const compTx = createCompensationTransaction(
+          originalTx.packageId, complaint.bookingId, complaint.refundSessions,
+          complaint.reason, 'complaint', operatorId
+        )
+        const newTxs = [...state.transactions, compTx]
+        set({ transactions: newTxs })
+        save('transactions', newTxs)
+      }
+    }
+
+    const updatedComplaints = complaints.map((c: any) =>
+      c.id === complaintId ? { ...c, status: approved ? 'approved' : 'rejected', processedAt: new Date().toISOString(), processedBy: operatorId } : c
+    )
+    set({ complaints: updatedComplaints } as any)
+    save('complaints', updatedComplaints)
+  },
+
+  batchReschedule: (coachId, fromDate, toDate, reason) => {
+    const state = get()
+    const { canBatch, affectedBookings, lockedBookings, reason: batchReason } = canBatchReschedule(
+      coachId, fromDate, toDate, state.bookings, state.closingSnapshots
+    )
+
+    if (!canBatch && lockedBookings.length > 0) {
+      return { success: false, error: batchReason }
+    }
+
+    const { txs, successCount, failCount } = createBatchRescheduleTransactions(
+      affectedBookings, state.packages, state.transactions, reason, state.currentUser?.id
+    )
+
+    const batchRecord = createBatchRescheduleRecord(
+      coachId, fromDate, toDate, reason, affectedBookings.map(b => b.id), state.currentUser?.id
+    )
+    batchRecord.successCount = successCount
+    batchRecord.failCount = failCount
+    batchRecord.status = 'completed'
+
+    const newBookings = state.bookings.map(b => {
+      const affected = affectedBookings.find(a => a.id === b.id)
+      if (affected) {
+        return { ...b, status: 'cancelled' as const, cancelReason: `批量改课: ${reason}`, cancelledAt: new Date().toISOString() }
+      }
+      return b
+    })
+
+    const newTxs = [...state.transactions, ...txs]
+    const batchRecords: any[] = [...(state as any).batchReschedules ?? [], batchRecord]
+
+    set({ bookings: newBookings, transactions: newTxs, batchReschedules: batchRecords } as any)
+    save('bookings', newBookings)
+    save('transactions', newTxs)
+    save('batch_reschedules', batchRecords)
+    get().addAuditLog('BATCH_RESCHEDULE', 'Coach', coachId)
+
+    return { success: true, affectedCount: successCount }
+  },
+
+  getClosingDiffReport: (snapshotId) => {
+    const state = get()
+    const snapshot = state.closingSnapshots.find(s => s.id === snapshotId)
+    if (!snapshot) return null
+    return generateClosingDiffReport(
+      snapshot, state.packages, state.transactions, state.members,
+      state.coaches, state.bookings, state.courses, state.adjustmentOrders
+    )
   },
 
   addAuditLog: (action, targetType, targetId, beforeData, afterData) => {

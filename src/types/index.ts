@@ -35,14 +35,20 @@ export interface Package {
   sharedFromMemberId?: string
   sharedQuota: number
   isGift: boolean
+  isCompensation: boolean
+  isCorporate: boolean
+  corporateId?: string
   transferRule: 'none' | 'allowed' | 'approval'
   refundRule: 'none' | 'proportional' | 'full'
   courseLevelIds: string[]
+  storeIds: string[]
   createdAt: string
   status: 'active' | 'frozen' | 'expired' | 'transferred' | 'refunded'
 }
 
 export type TransactionType = 'POSITIVE' | 'REVERSAL' | 'COMPENSATION' | 'CLOSING' | 'ADJUSTMENT'
+
+export type TransactionSource = 'booking' | 'cancellation' | 'leave' | 'substitution' | 'complaint' | 'batch_reschedule' | 'adjustment' | 'purchase' | 'gift' | 'compensation' | 'transfer' | 'refund'
 
 export interface Transaction {
   id: string
@@ -56,6 +62,9 @@ export interface Transaction {
   isSharedDeduction?: boolean
   sharedFromMemberId?: string
   operatorId?: string
+  source?: TransactionSource
+  relatedBookingId?: string
+  commissionEffect?: number
 }
 
 export interface Coach {
@@ -105,6 +114,11 @@ export interface Booking {
   cancelledAt?: string
   createdAt: string
   storeId: string
+  originalCoachId?: string
+  isSubstituted?: boolean
+  deductionDetails?: DeductionDetail[]
+  restrictionReason?: string
+  isLocked?: boolean
 }
 
 export interface Course {
@@ -144,6 +158,7 @@ export interface ClosingSnapshot {
   createdAt: string
   isLocked: boolean
   snapshotData: Record<string, number>
+  commissionSnapshot?: Record<string, number>
 }
 
 export interface FamilyGroup {
@@ -230,4 +245,101 @@ export interface ReconciliationDiff {
   snapshotBalance: number
   replayBalance: number
   difference: number
+}
+
+export interface DeductionDetail {
+  packageId: string
+  packageName: string
+  packageType: 'purchase' | 'gift' | 'compensation' | 'corporate' | 'shared'
+  deductionAmount: number
+  beforeBalance: number
+  afterBalance: number
+  reason: string
+  priority: number
+}
+
+export interface SubstitutionRecord {
+  id: string
+  bookingId: string
+  originalCoachId: string
+  substituteCoachId: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  createdAt: string
+  processedAt?: string
+  operatorId?: string
+  commissionSplit?: number
+}
+
+export interface ComplaintRecord {
+  id: string
+  bookingId: string
+  memberId: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  refundSessions: number
+  createdAt: string
+  processedAt?: string
+  operatorId?: string
+  description?: string
+}
+
+export interface BatchRescheduleRecord {
+  id: string
+  fromDate: string
+  toDate: string
+  coachId: string
+  reason: string
+  affectedBookingIds: string[]
+  status: 'pending' | 'completed' | 'failed'
+  createdAt: string
+  operatorId?: string
+  successCount: number
+  failCount: number
+}
+
+export interface PackageAccountSummary {
+  packageId: string
+  packageName: string
+  packageType: 'purchase' | 'gift' | 'compensation' | 'corporate' | 'shared'
+  totalSessions: number
+  usedSessions: number
+  remainingSessions: number
+  expireDate: string
+  storeIds: string[]
+  courseLevelIds: string[]
+  isFrozen: boolean
+  isExpired: boolean
+  priority: number
+  sourceMemberName?: string
+}
+
+export interface BookingExplanation {
+  bookingId: string
+  canBook: boolean
+  reason?: string
+  deductionPlan: DeductionDetail[]
+  restrictions: string[]
+  locked?: boolean
+  lockedPeriod?: string
+}
+
+export interface CommissionDiff {
+  coachId: string
+  coachName: string
+  snapshotCommission: number
+  actualCommission: number
+  difference: number
+  detail: { bookingId: string; courseName: string; amount: number; type: string }[]
+}
+
+export interface ClosingDiffReport {
+  snapshotId: string
+  period: string
+  totalPackages: number
+  totalTransactions: number
+  totalCommission: number
+  packageDiffs: ReconciliationDiff[]
+  commissionDiffs: CommissionDiff[]
+  adjustmentOrders: AdjustmentOrder[]
 }

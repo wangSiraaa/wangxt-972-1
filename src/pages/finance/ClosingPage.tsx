@@ -1,8 +1,9 @@
 import { useState, useMemo } from 'react'
-import { ShieldCheck, Camera, Lock, Plus, AlertTriangle, CheckCircle2, RefreshCw, FileText } from 'lucide-react'
+import { ShieldCheck, Camera, Lock, Plus, AlertTriangle, CheckCircle2, FileText, DollarSign, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useGymStore } from '@/stores/gymStore'
-import type { ReconciliationDiff } from '@/types'
+import { calculateCoachCommission, generateClosingDiffReport } from '@/engines/closingEngine'
+import type { ReconciliationDiff, CommissionDiff } from '@/types'
 
 const ADJ_STATUS: Record<string, { label: string; cls: string }> = {
   pending: { label: '待审批', cls: 'bg-gold/15 text-gold' },
@@ -13,13 +14,15 @@ const ADJ_STATUS: Record<string, { label: string; cls: string }> = {
 export default function ClosingPage() {
   const {
     closingSnapshots, packages, transactions, members, adjustmentOrders,
-    executeClosing, getReconciliationDiffs, createAdjustment,
+    coaches, bookings, courses,
+    executeClosing, getReconciliationDiffs, createAdjustment, getClosingDiffReport,
   } = useGymStore()
 
   const [currentStep, setCurrentStep] = useState(1)
   const [period, setPeriod] = useState(() => new Date().toISOString().slice(0, 7))
   const [validationResult, setValidationResult] = useState<ReconciliationDiff[] | null>(null)
-  const [lastSnapshot, setLastSnapshot] = useState<{ id: string; period: string; snapshotData: Record<string, number> } | null>(null)
+  const [commissionDiffs, setCommissionDiffs] = useState<CommissionDiff[] | null>(null)
+  const [lastSnapshot, setLastSnapshot] = useState<{ id: string; period: string; snapshotData: Record<string, number>; commissionSnapshot?: Record<string, number> } | null>(null)
   const [executedTxCount, setExecutedTxCount] = useState(0)
   const [hasValidated, setHasValidated] = useState(false)
 
@@ -60,8 +63,12 @@ export default function ClosingPage() {
     const txBefore = transactions.length
     const snapshot = executeClosing(period)
     const txAfter = transactions.length + Object.keys(snapshot.snapshotData).length
-    setLastSnapshot({ id: snapshot.id, period: snapshot.period, snapshotData: snapshot.snapshotData })
+    setLastSnapshot({ id: snapshot.id, period: snapshot.period, snapshotData: snapshot.snapshotData, commissionSnapshot: snapshot.commissionSnapshot })
     setExecutedTxCount(Object.keys(snapshot.snapshotData).length)
+    const diffReport = getClosingDiffReport(snapshot.id)
+    if (diffReport) {
+      setCommissionDiffs(diffReport.commissionDiffs)
+    }
     setCurrentStep(3)
   }
 
@@ -145,7 +152,7 @@ export default function ClosingPage() {
 
         {currentStep === 1 && (
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-3 mb-2">
+            <div className="grid grid-cols-4 gap-3 mb-2">
               <div className="bg-dark-light rounded-lg p-3">
                 <div className="text-xs text-white/40 mb-1">本期课包</div>
                 <div className="text-2xl font-display text-gold">{packages.length}</div>
@@ -157,6 +164,12 @@ export default function ClosingPage() {
               <div className="bg-dark-light rounded-lg p-3">
                 <div className="text-xs text-white/40 mb-1">历史快照</div>
                 <div className="text-2xl font-display text-gold">{closingSnapshots.length}</div>
+              </div>
+              <div className="bg-dark-light rounded-lg p-3">
+                <div className="text-xs text-white/40 mb-1">教练佣金</div>
+                <div className="text-2xl font-display text-emerald-400">
+                  ¥{coaches.reduce((sum, c) => sum + calculateCoachCommission(c.id, period, bookings, courses, c.commissionRate), 0).toFixed(2)}
+                </div>
               </div>
             </div>
             {!latestSnapshot && (
@@ -288,6 +301,63 @@ export default function ClosingPage() {
                 </tbody>
               </table>
             </div>
+
+            {lastSnapshot.commissionSnapshot && (
+              <div className="overflow-x-auto max-h-48">
+                <div className="text-sm font-medium text-white/60 mb-2 flex items-center gap-2">
+                  <DollarSign className="w-4 h-4 text-emerald-400" />
+                  教练佣金快照
+                </div>
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-dark">
+                    <tr className="text-white/40 border-b border-white/10">
+                      <th className="text-left py-2 font-medium">教练</th>
+                      <th className="text-right py-2 font-medium">快照佣金</th>
+                      <th className="text-right py-2 font-medium">完成课时</th>
+                      <th className="text-right py-2 font-medium">佣金比例</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {Object.entries(lastSnapshot.commissionSnapshot).map(([coachId, commission]) => {
+                      const coach = coaches.find(c => c.id === coachId)
+                      const periodCompleted = bookings.filter(
+                        b => b.coachId === coachId && b.datetime.startsWith(period) && b.status === 'completed'
+                      ).length
+                      return (
+                        <tr key={coachId} className="text-white/70">
+                          <td className="py-1">{coach?.name ?? coachId}</td>
+                          <td className="text-right py-1 text-emerald-400">¥{commission.toFixed(2)}</td>
+                          <td className="text-right py-1">{periodCompleted}节</td>
+                          <td className="text-right py-1">{coach ? (coach.commissionRate * 100).toFixed(0) + '%' : '-'}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {commissionDiffs && commissionDiffs.length > 0 && (
+              <div className="bg-coral/10 border border-coral/20 rounded-lg p-3">
+                <div className="flex items-center gap-2 text-coral text-sm mb-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  佣金差异 ({commissionDiffs.length}项)
+                </div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {commissionDiffs.map(diff => (
+                    <div key={diff.coachId} className="flex items-center justify-between text-xs">
+                      <span className="text-white/70">{diff.coachName}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-white/40">快照: ¥{diff.snapshotCommission.toFixed(2)}</span>
+                        <span className="text-white/40">实际: ¥{diff.actualCommission.toFixed(2)}</span>
+                        <span className="text-coral font-medium">{diff.difference > 0 ? '+' : ''}{diff.difference.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="flex gap-3">
               <button
                 onClick={() => { setCurrentStep(1); setValidationResult(null); setLastSnapshot(null); setHasValidated(false); setExecutedTxCount(0) }}

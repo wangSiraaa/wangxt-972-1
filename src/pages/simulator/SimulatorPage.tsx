@@ -15,7 +15,8 @@ export default function SimulatorPage() {
 
   const handleSimulate = () => {
     if (!memberId || !courseId) return
-    const sim = simulateDeductionForBooking(memberId, courseId)
+    const course = courses.find(c => c.id === courseId)
+    const sim = simulateDeductionForBooking(memberId, courseId, course?.storeId)
     setRevealed(false)
     setResult(sim)
     requestAnimationFrame(() => {

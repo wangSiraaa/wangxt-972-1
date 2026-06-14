@@ -1,9 +1,9 @@
 import { useState, useMemo } from 'react'
-import { Package as PackageIcon, ChevronRight, ChevronLeft, FlaskConical } from 'lucide-react'
+import { Package as PackageIcon, ChevronRight, ChevronLeft, FlaskConical, Gift, Heart, Briefcase, ShoppingBag, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useGymStore } from '@/stores/gymStore'
-import { calculateBalance } from '@/engines/balanceEngine'
-import type { TransactionType } from '@/types'
+import { calculateBalance, getMemberPackageSummaries, getPackageType } from '@/engines/balanceEngine'
+import type { TransactionType, PackageAccountSummary } from '@/types'
 
 const PKG_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   active: { label: '有效', cls: 'bg-emerald-700/20 text-emerald-400' },
@@ -45,8 +45,37 @@ export default function MyPackages() {
 
   const simResult = useMemo(() => {
     if (!currentUser || !simCourseId) return null
-    return simulateDeductionForBooking(currentUser.id, simCourseId)
-  }, [currentUser, simCourseId, simulateDeductionForBooking])
+    const course = courses.find(c => c.id === simCourseId)
+    if (!course) return null
+    return simulateDeductionForBooking(currentUser.id, simCourseId, course.storeId)
+  }, [currentUser, simCourseId, simulateDeductionForBooking, courses])
+
+  const packageSummaries = useMemo(() => {
+    if (!currentUser) return [] as PackageAccountSummary[]
+    return getMemberPackageSummaries(currentUser.id, packages, transactions, packageTypes)
+  }, [currentUser, packages, transactions, packageTypes])
+
+  const typeSummary = useMemo(() => {
+    const groups: Record<string, { name: string; count: number; balance: number }> = {
+      purchase: { name: '购买课包', count: 0, balance: 0 },
+      gift: { name: '赠课', count: 0, balance: 0 },
+      compensation: { name: '补偿课时', count: 0, balance: 0 },
+      corporate: { name: '企业团课', count: 0, balance: 0 },
+      shared: { name: '家庭共享', count: 0, balance: 0 },
+    }
+    packageSummaries.forEach(s => {
+      const group = groups[s.packageType]
+      if (group) {
+        group.count++
+        group.balance += s.remainingSessions
+      }
+    })
+    return Object.entries(groups).filter(([, g]) => g.count > 0).map(([type, g]) => ({ type, ...g }))
+  }, [packageSummaries])
+
+  const totalBalance = useMemo(() => {
+    return packageSummaries.reduce((sum, s) => sum + s.remainingSessions, 0)
+  }, [packageSummaries])
 
   const getExpireCountdown = (expireDate: string) => {
     const diff = Math.ceil((new Date(expireDate).getTime() - Date.now()) / 86400000)
@@ -66,6 +95,29 @@ export default function MyPackages() {
   return (
     <div className="space-y-6">
       <h1 className="heading-display text-2xl font-bold text-dark">我的课包</h1>
+
+      <div className="grid grid-cols-5 gap-3">
+        <div className="card-dark p-4 text-center">
+          <div className="text-3xl font-bold text-gold mb-1">{totalBalance}</div>
+          <div className="text-xs text-white/40">总余额</div>
+        </div>
+        {typeSummary.slice(0, 4).map(item => {
+          const IconComp = item.type === 'gift' ? Gift :
+            item.type === 'compensation' ? Heart :
+            item.type === 'corporate' ? Briefcase :
+            item.type === 'shared' ? Users : ShoppingBag
+          return (
+            <div key={item.type} className="card-dark p-4 text-center">
+              <div className="flex items-center justify-center gap-1 mb-2">
+                <IconComp className="w-4 h-4 text-gold" />
+                <span className="text-xs text-white/50">{item.name}</span>
+              </div>
+              <div className="text-2xl font-bold text-white">{item.balance}</div>
+              <div className="text-xs text-white/30 mt-1">{item.count}个课包</div>
+            </div>
+          )
+        })}
+      </div>
 
       <div className="relative">
         <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide" style={{ scrollBehavior: 'smooth' }}>
